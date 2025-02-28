@@ -15,19 +15,19 @@ package tsdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
-
-	"github.com/go-kit/log"
 
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
 
-var ErrInvalidTimes = fmt.Errorf("max time is lesser than min time")
+var ErrInvalidTimes = errors.New("max time is lesser than min time")
 
 // CreateBlock creates a chunkrange block from the samples passed to it, and writes it to disk.
-func CreateBlock(series []storage.Series, dir string, chunkRange int64, logger log.Logger) (string, error) {
+func CreateBlock(series []storage.Series, dir string, chunkRange int64, logger *slog.Logger) (string, error) {
 	if chunkRange == 0 {
 		chunkRange = DefaultBlockDuration
 	}
@@ -41,7 +41,7 @@ func CreateBlock(series []storage.Series, dir string, chunkRange int64, logger l
 	}
 	defer func() {
 		if err := w.Close(); err != nil {
-			logger.Log("err closing blockwriter", err.Error())
+			logger.Error("err closing blockwriter", "err", err.Error())
 		}
 	}()
 
@@ -49,10 +49,11 @@ func CreateBlock(series []storage.Series, dir string, chunkRange int64, logger l
 	const commitAfter = 10000
 	ctx := context.Background()
 	app := w.Appender(ctx)
+	var it chunkenc.Iterator
 
 	for _, s := range series {
 		ref := storage.SeriesRef(0)
-		it := s.Iterator()
+		it = s.Iterator(it)
 		lset := s.Labels()
 		typ := it.Next()
 		lastTyp := typ
@@ -72,8 +73,11 @@ func CreateBlock(series []storage.Series, dir string, chunkRange int64, logger l
 				t, v := it.At()
 				ref, err = app.Append(ref, lset, t, v)
 			case chunkenc.ValHistogram:
-				t, h := it.AtHistogram()
-				ref, err = app.AppendHistogram(ref, lset, t, h)
+				t, h := it.AtHistogram(nil)
+				ref, err = app.AppendHistogram(ref, lset, t, h, nil)
+			case chunkenc.ValFloatHistogram:
+				t, fh := it.AtFloatHistogram(nil)
+				ref, err = app.AppendHistogram(ref, lset, t, nil, fh)
 			default:
 				return "", fmt.Errorf("unknown sample type %s", typ.String())
 			}
